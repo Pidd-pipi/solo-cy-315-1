@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -87,7 +88,7 @@ func openDatabase(path string) (*gorm.DB, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(sqliteDSN(path)), &gorm.Config{
 		Logger:         gormlogger.Default.LogMode(gormlogger.Silent),
 		TranslateError: true,
 	})
@@ -95,6 +96,19 @@ func openDatabase(path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	return db, nil
+}
+
+// sqliteDSN appends a busy timeout so concurrent writers wait for each other
+// instead of failing with "database is locked".
+func sqliteDSN(path string) string {
+	if strings.Contains(path, "busy_timeout") {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_pragma=busy_timeout(5000)"
 }
 
 func migrate(db *gorm.DB) error {
@@ -130,7 +144,7 @@ func newApp(db *gorm.DB, logger *slog.Logger) (*gin.Engine, error) {
 	courseService := service.NewCourseService(courseRepo, logger)
 	timeSlotService := service.NewTimeSlotService(timeSlotRepo, logger)
 	versionService := service.NewScheduleVersionService(versionRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, logger)
-	scheduleService := service.NewScheduleService(scheduleRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, adjustmentRepo, versionService, logger)
+	scheduleService := service.NewScheduleService(scheduleRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, adjustmentRepo, versionService, repository.NewTransactor(db), logger)
 
 	h := router.Handlers{
 		Classroom:       handler.NewClassroomHandler(classroomService, logger),

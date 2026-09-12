@@ -199,31 +199,25 @@ func (s *scheduleVersionService) Compare(ctx context.Context, fromID, toID uint)
 
 // Publish marks a version as the single published snapshot. Only the latest
 // version may be published; publishing a new version archives the previously
-// published one.
+// published one. The repository performs the checks inside the publish
+// transaction, so concurrent publishes can never breach the invariant.
 func (s *scheduleVersionService) Publish(ctx context.Context, id uint) (*dto.ScheduleVersionResponse, error) {
+	if err := s.versions.Publish(ctx, id, time.Now()); err != nil {
+		switch {
+		case errors.Is(err, repository.ErrNotFound):
+			return nil, ErrNotFound
+		case errors.Is(err, repository.ErrAlreadyPublished):
+			return nil, ErrVersionAlreadyPublished
+		case errors.Is(err, repository.ErrNotLatest):
+			return nil, ErrVersionNotLatest
+		default:
+			return nil, fmt.Errorf("publish schedule version: %w", err)
+		}
+	}
 	version, err := s.versions.GetByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("get schedule version: %w", err)
+		return nil, fmt.Errorf("get published schedule version: %w", err)
 	}
-	if version.Status == constants.VersionStatusPublished {
-		return nil, ErrVersionAlreadyPublished
-	}
-	latest, err := s.versions.Latest(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get latest schedule version: %w", err)
-	}
-	if latest.ID != version.ID {
-		return nil, ErrVersionNotLatest
-	}
-	now := time.Now()
-	if err := s.versions.Publish(ctx, id, now); err != nil {
-		return nil, fmt.Errorf("publish schedule version: %w", err)
-	}
-	version.Status = constants.VersionStatusPublished
-	version.PublishedAt = &now
 	resp := versionResponse(version)
 	return &resp, nil
 }

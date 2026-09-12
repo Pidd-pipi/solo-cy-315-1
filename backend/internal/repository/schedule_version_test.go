@@ -71,26 +71,38 @@ func TestScheduleVersionRepositoryPublishKeepsSinglePublished(t *testing.T) {
 		t.Fatalf("create v2: %v", err)
 	}
 
-	if err := repo.Publish(ctx, v1.ID, time.Now()); err != nil {
-		t.Fatalf("publish v1: %v", err)
+	// The repository itself rejects publishing a non-latest version.
+	if err := repo.Publish(ctx, v1.ID, time.Now()); !errors.Is(err, repository.ErrNotLatest) {
+		t.Fatalf("expected ErrNotLatest publishing old version, got %v", err)
 	}
 	if err := repo.Publish(ctx, v2.ID, time.Now()); err != nil {
 		t.Fatalf("publish v2: %v", err)
 	}
+	if err := repo.Publish(ctx, v2.ID, time.Now()); !errors.Is(err, repository.ErrAlreadyPublished) {
+		t.Fatalf("expected ErrAlreadyPublished on repeated publish, got %v", err)
+	}
 
-	first, err := repo.GetByID(ctx, v1.ID)
-	if err != nil {
-		t.Fatalf("get v1: %v", err)
+	v3 := &model.ScheduleVersion{Status: constants.VersionStatusDraft}
+	if err := repo.Create(ctx, v3, nil); err != nil {
+		t.Fatalf("create v3: %v", err)
 	}
-	if first.Status != constants.VersionStatusArchived {
-		t.Fatalf("expected v1 archived after v2 published, got %s", first.Status)
+	if err := repo.Publish(ctx, v3.ID, time.Now()); err != nil {
+		t.Fatalf("publish v3: %v", err)
 	}
+
 	second, err := repo.GetByID(ctx, v2.ID)
 	if err != nil {
 		t.Fatalf("get v2: %v", err)
 	}
-	if second.Status != constants.VersionStatusPublished || second.PublishedAt == nil {
-		t.Fatalf("expected v2 published with timestamp, got %+v", second)
+	if second.Status != constants.VersionStatusArchived {
+		t.Fatalf("expected v2 archived after v3 published, got %s", second.Status)
+	}
+	third, err := repo.GetByID(ctx, v3.ID)
+	if err != nil {
+		t.Fatalf("get v3: %v", err)
+	}
+	if third.Status != constants.VersionStatusPublished || third.PublishedAt == nil {
+		t.Fatalf("expected v3 published with timestamp, got %+v", third)
 	}
 
 	if err := repo.Publish(ctx, 9999, time.Now()); !errors.Is(err, repository.ErrNotFound) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"gorm.io/gorm"
@@ -201,6 +202,81 @@ func TestScheduleVersionCompare(t *testing.T) {
 
 	if _, err := versions.Compare(ctx, v1.ID, 9999); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound comparing with missing version, got %v", err)
+	}
+}
+
+func TestScheduleVersionConcurrentPublish(t *testing.T) {
+	ctx := context.Background()
+	db := newScheduleTestDB(t)
+	f := seedVersionFixture(t, db)
+	versions := newVersionService(db, slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+
+	const count = 5
+	ids := make([]uint, 0, count)
+	for i := 0; i < count; i++ {
+		v, err := versions.Snapshot(ctx, generateRequest(1, f), nil)
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		ids = append(ids, v.ID)
+	}
+	latestID := ids[count-1]
+
+	// Hammer publish from many goroutines: old versions must always fail,
+	// the latest must succeed exactly once, and no internal error may occur.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successByID := map[uint]int{}
+	var errs []error
+	for _, id := range ids {
+		for r := 0; r < 3; r++ {
+			wg.Add(1)
+			go func(id uint) {
+				defer wg.Done()
+				_, err := versions.Publish(ctx, id)
+				mu.Lock()
+				defer mu.Unlock()
+				if err == nil {
+					successByID[id]++
+				} else {
+					errs = append(errs, err)
+				}
+			}(id)
+		}
+	}
+	wg.Wait()
+
+	for _, id := range ids {
+		want := 0
+		if id == latestID {
+			want = 1
+		}
+		if successByID[id] != want {
+			t.Fatalf("version %d: expected %d successful publishes, got %d", id, want, successByID[id])
+		}
+	}
+	for _, err := range errs {
+		if !errors.Is(err, service.ErrVersionAlreadyPublished) && !errors.Is(err, service.ErrVersionNotLatest) {
+			t.Fatalf("publish must fail with a clear domain error, got %v", err)
+		}
+	}
+
+	// Under concurrent pressure, exactly one published version exists.
+	items, _, err := versions.List(ctx, 1, 50)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	published := 0
+	for _, item := range items {
+		if item.Status == constants.VersionStatusPublished {
+			published++
+			if item.ID != latestID {
+				t.Fatalf("only the latest version may stay published, got id=%d", item.ID)
+			}
+		}
+	}
+	if published != 1 {
+		t.Fatalf("expected exactly one published version, got %d", published)
 	}
 }
 

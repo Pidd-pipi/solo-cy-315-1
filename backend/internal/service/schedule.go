@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 
 	"github.com/gbschedule/gbschedule/internal/constants"
 	"github.com/gbschedule/gbschedule/internal/dto"
@@ -37,6 +38,8 @@ type scheduleService struct {
 	timeSlots   repository.TimeSlotRepository
 	adjustments repository.AdjustmentLogRepository
 	versions    ScheduleVersionService
+	tx          repository.Transactor
+	generateMu  sync.Mutex
 	logger      *slog.Logger
 }
 
@@ -50,6 +53,7 @@ func NewScheduleService(
 	timeSlots repository.TimeSlotRepository,
 	adjustments repository.AdjustmentLogRepository,
 	versions ScheduleVersionService,
+	tx repository.Transactor,
 	logger *slog.Logger,
 ) ScheduleService {
 	return &scheduleService{
@@ -61,6 +65,7 @@ func NewScheduleService(
 		timeSlots:   timeSlots,
 		adjustments: adjustments,
 		versions:    versions,
+		tx:          tx,
 		logger:      logger,
 	}
 }
@@ -151,30 +156,20 @@ func (s *scheduleService) Generate(ctx context.Context, req *dto.GenerateSchedul
 		}
 	}
 
-	// Regenerate the full timetable for the requested semester so stale
-	// weeks from a previous longer run are not left behind.
-	if err := s.schedules.DeleteAll(ctx); err != nil {
-		return nil, fmt.Errorf("clear old schedules: %w", err)
-	}
-	if err := s.schedules.CreateBatch(ctx, allSchedules); err != nil {
-		return nil, fmt.Errorf("persist schedules: %w", err)
+	// Replace the live timetable and record the immutable snapshot in one
+	// atomic commit: both are written or both are rolled back.
+	snapshot, err := s.persistGeneration(ctx, req, allSchedules)
+	if err != nil {
+		return nil, err
 	}
 
-	generatedConflicts, err := s.CheckConflicts(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("check generated conflicts: %w", err)
-	}
+	// Conflicts are computed on the generated set itself, never on the live
+	// table, so a concurrent generation cannot leak into this response.
+	generatedConflicts := s.detectConflicts(ctx, allSchedules)
 
 	responses, err := s.enrichSchedules(ctx, allSchedules)
 	if err != nil {
 		return nil, fmt.Errorf("enrich schedules: %w", err)
-	}
-
-	// Every generation run captures an immutable snapshot of the resulting
-	// timetable so versions can be listed, inspected, diffed and published.
-	snapshot, err := s.versions.Snapshot(ctx, req, allSchedules)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot schedule version: %w", err)
 	}
 
 	resp := &dto.GenerateScheduleResponse{
@@ -186,6 +181,37 @@ func (s *scheduleService) Generate(ctx context.Context, req *dto.GenerateSchedul
 		VersionNo: snapshot.VersionNo,
 	}
 	return resp, nil
+}
+
+// persistGeneration atomically replaces the live timetable and captures the
+// version snapshot. Concurrent generations compute in parallel but commit
+// one at a time, so the live table always holds exactly one generation's
+// result and version numbers never collide.
+func (s *scheduleService) persistGeneration(ctx context.Context, req *dto.GenerateScheduleRequest, schedules []model.Schedule) (*model.ScheduleVersion, error) {
+	s.generateMu.Lock()
+	defer s.generateMu.Unlock()
+
+	var snapshot *model.ScheduleVersion
+	err := s.tx.InTransaction(ctx, func(txCtx context.Context) error {
+		// Regenerate the full timetable for the requested semester so stale
+		// weeks from a previous longer run are not left behind.
+		if err := s.schedules.DeleteAll(txCtx); err != nil {
+			return fmt.Errorf("clear old schedules: %w", err)
+		}
+		if err := s.schedules.CreateBatch(txCtx, schedules); err != nil {
+			return fmt.Errorf("persist schedules: %w", err)
+		}
+		snap, err := s.versions.Snapshot(txCtx, req, schedules)
+		if err != nil {
+			return fmt.Errorf("snapshot schedule version: %w", err)
+		}
+		snapshot = snap
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 func (s *scheduleService) List(ctx context.Context, week, classID, teacherID, classroomID *uint) ([]dto.ScheduleResponse, error) {

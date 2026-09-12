@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,10 @@ import (
 	"github.com/gbschedule/gbschedule/internal/model"
 	"gorm.io/gorm"
 )
+
+// createMaxRetries bounds how often version creation retries after losing a
+// concurrent version-number allocation.
+const createMaxRetries = 3
 
 // ScheduleVersionRepository defines persistence operations for timetable
 // snapshots. Versions are append-only: no update or delete of entries exists.
@@ -30,32 +35,53 @@ func NewScheduleVersionRepository(db *gorm.DB) ScheduleVersionRepository {
 	return &scheduleVersionRepository{db: db}
 }
 
-// Create assigns the next sequential version number and persists the snapshot
-// with all of its entries in one transaction.
+// Create persists a snapshot with all of its entries. When ctx carries a
+// caller-managed transaction the snapshot joins it, so the caller's other
+// writes commit or roll back together with the snapshot. Standalone creates
+// run in their own transaction and retry when a concurrent insert claims the
+// same version number first.
 func (r *scheduleVersionRepository) Create(ctx context.Context, version *model.ScheduleVersion, entries []model.ScheduleVersionEntry) error {
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var maxNo uint
-		if err := tx.Model(&model.ScheduleVersion{}).
-			Select("COALESCE(MAX(version_no), 0)").
-			Scan(&maxNo).Error; err != nil {
-			return fmt.Errorf("next version number: %w", err)
+	if tx, ok := txFromContext(ctx); ok {
+		return r.createWithNextNumber(tx.WithContext(ctx), version, entries)
+	}
+	var err error
+	for attempt := 0; attempt < createMaxRetries; attempt++ {
+		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return r.createWithNextNumber(tx, version, entries)
+		})
+		if err == nil {
+			return nil
 		}
-		version.VersionNo = maxNo + 1
-		if err := tx.Create(version).Error; err != nil {
-			return fmt.Errorf("create schedule version: %w", err)
+		if !errors.Is(err, ErrConstraint) {
+			return err
 		}
-		for i := range entries {
-			entries[i].VersionID = version.ID
+	}
+	return fmt.Errorf("create schedule version: %w", err)
+}
+
+// createWithNextNumber assigns the next sequential version number and inserts
+// the snapshot with its entries inside tx.
+func (r *scheduleVersionRepository) createWithNextNumber(tx *gorm.DB, version *model.ScheduleVersion, entries []model.ScheduleVersionEntry) error {
+	var maxNo uint
+	if err := tx.Model(&model.ScheduleVersion{}).
+		Select("COALESCE(MAX(version_no), 0)").
+		Scan(&maxNo).Error; err != nil {
+		return fmt.Errorf("next version number: %w", err)
+	}
+	version.VersionNo = maxNo + 1
+	if err := tx.Create(version).Error; err != nil {
+		if isConstraintError(err) {
+			return ErrConstraint
 		}
-		if len(entries) > 0 {
-			if err := tx.CreateInBatches(entries, 200).Error; err != nil {
-				return fmt.Errorf("create schedule version entries: %w", err)
-			}
+		return fmt.Errorf("create schedule version: %w", err)
+	}
+	for i := range entries {
+		entries[i].VersionID = version.ID
+	}
+	if len(entries) > 0 {
+		if err := tx.CreateInBatches(entries, 200).Error; err != nil {
+			return fmt.Errorf("create schedule version entries: %w", err)
 		}
-		return nil
-	})
-	if err != nil {
-		return err
 	}
 	return nil
 }
@@ -100,24 +126,41 @@ func (r *scheduleVersionRepository) Latest(ctx context.Context) (*model.Schedule
 	return &item, nil
 }
 
-// Publish atomically archives the currently published version (if any) and
-// marks the target version as published, guaranteeing at most one published
-// version at any moment.
+// Publish atomically validates and marks the target version as published. The
+// transaction leads with a write so the database write lock is held before
+// any check runs: concurrent publishers and generators cannot change the
+// observed state until commit. At most one published version exists at any
+// moment — other published versions are archived in the same transaction.
 func (r *scheduleVersionRepository) Publish(ctx context.Context, id uint, publishedAt time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Archive other published versions first. Besides enforcing the
+		// single-published invariant, this write acquires the write lock up
+		// front so the checks below observe a stable state.
 		if err := tx.Model(&model.ScheduleVersion{}).
-			Where("status = ?", constants.VersionStatusPublished).
+			Where("status = ? AND id <> ?", constants.VersionStatusPublished, id).
 			Update("status", constants.VersionStatusArchived).Error; err != nil {
 			return fmt.Errorf("archive published version: %w", err)
 		}
-		result := tx.Model(&model.ScheduleVersion{}).
-			Where("id = ?", id).
-			Updates(map[string]any{"status": constants.VersionStatusPublished, "published_at": publishedAt})
-		if result.Error != nil {
-			return fmt.Errorf("publish schedule version: %w", result.Error)
+		var target model.ScheduleVersion
+		if err := tx.First(&target, id).Error; err != nil {
+			return normalizeError(err)
 		}
-		if result.RowsAffected == 0 {
-			return ErrNotFound
+		if target.Status == constants.VersionStatusPublished {
+			return ErrAlreadyPublished
+		}
+		var maxNo uint
+		if err := tx.Model(&model.ScheduleVersion{}).
+			Select("COALESCE(MAX(version_no), 0)").
+			Scan(&maxNo).Error; err != nil {
+			return fmt.Errorf("latest version number: %w", err)
+		}
+		if target.VersionNo != maxNo {
+			return ErrNotLatest
+		}
+		if err := tx.Model(&model.ScheduleVersion{}).
+			Where("id = ?", id).
+			Updates(map[string]any{"status": constants.VersionStatusPublished, "published_at": publishedAt}).Error; err != nil {
+			return fmt.Errorf("publish schedule version: %w", err)
 		}
 		return nil
 	})
