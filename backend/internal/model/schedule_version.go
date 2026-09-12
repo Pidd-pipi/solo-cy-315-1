@@ -18,7 +18,7 @@ type ScheduleVersion struct {
 	EntryCount      int        `gorm:"not null" json:"entry_count"`
 	Status          string     `gorm:"size:16;not null;index" json:"status"`
 	PublishedAt     *time.Time `json:"published_at,omitempty"`
-	SourceVersionID *uint      `gorm:"index" json:"source_version_id,omitempty"`
+	SourceVersionID *uint      `gorm:"index:idx_schedule_versions_source" json:"source_version_id,omitempty"`
 }
 
 // TableName explicitly names the table.

@@ -17,6 +17,7 @@ import (
 	_ "github.com/gbschedule/gbschedule/docs"
 	"github.com/gbschedule/gbschedule/internal/config"
 	"github.com/gbschedule/gbschedule/internal/handler"
+	"github.com/gbschedule/gbschedule/internal/migration"
 	"github.com/gbschedule/gbschedule/internal/model"
 	"github.com/gbschedule/gbschedule/internal/repository"
 	"github.com/gbschedule/gbschedule/internal/router"
@@ -120,6 +121,12 @@ func sqliteDSN(path string) string {
 }
 
 func migrate(db *gorm.DB) error {
+	// Versioned SQL migrations run first and are recorded in
+	// schema_migrations, so repeated starts never re-apply them; AutoMigrate
+	// reconciles any remaining model drift afterwards.
+	if err := migration.Apply(db, migration.Migrations); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
 	if err := db.AutoMigrate(
 		&model.Classroom{},
 		&model.Teacher{},
