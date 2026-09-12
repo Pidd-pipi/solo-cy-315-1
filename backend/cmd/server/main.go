@@ -106,6 +106,8 @@ func migrate(db *gorm.DB) error {
 		&model.TimeSlot{},
 		&model.Schedule{},
 		&model.AdjustmentLog{},
+		&model.ScheduleVersion{},
+		&model.ScheduleVersionEntry{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
@@ -120,22 +122,25 @@ func newApp(db *gorm.DB, logger *slog.Logger) (*gin.Engine, error) {
 	timeSlotRepo := repository.NewTimeSlotRepository(db)
 	scheduleRepo := repository.NewScheduleRepository(db)
 	adjustmentRepo := repository.NewAdjustmentLogRepository(db)
+	versionRepo := repository.NewScheduleVersionRepository(db)
 
 	classroomService := service.NewClassroomService(classroomRepo, logger)
 	teacherService := service.NewTeacherService(teacherRepo, logger)
 	classService := service.NewClassService(classRepo, logger)
 	courseService := service.NewCourseService(courseRepo, logger)
 	timeSlotService := service.NewTimeSlotService(timeSlotRepo, logger)
-	scheduleService := service.NewScheduleService(scheduleRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, adjustmentRepo, logger)
+	versionService := service.NewScheduleVersionService(versionRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, logger)
+	scheduleService := service.NewScheduleService(scheduleRepo, classroomRepo, teacherRepo, classRepo, courseRepo, timeSlotRepo, adjustmentRepo, versionService, logger)
 
 	h := router.Handlers{
-		Classroom:  handler.NewClassroomHandler(classroomService, logger),
-		Teacher:    handler.NewTeacherHandler(teacherService, logger),
-		Class:      handler.NewClassHandler(classService, logger),
-		Course:     handler.NewCourseHandler(courseService, logger),
-		TimeSlot:   handler.NewTimeSlotHandler(timeSlotService, logger),
-		Schedule:   handler.NewScheduleHandler(scheduleService, logger),
-		Statistics: handler.NewStatisticsHandler(scheduleService, logger),
+		Classroom:       handler.NewClassroomHandler(classroomService, logger),
+		Teacher:         handler.NewTeacherHandler(teacherService, logger),
+		Class:           handler.NewClassHandler(classService, logger),
+		Course:          handler.NewCourseHandler(courseService, logger),
+		TimeSlot:        handler.NewTimeSlotHandler(timeSlotService, logger),
+		Schedule:        handler.NewScheduleHandler(scheduleService, logger),
+		ScheduleVersion: handler.NewScheduleVersionHandler(versionService, logger),
+		Statistics:      handler.NewStatisticsHandler(scheduleService, logger),
 	}
 	return router.New(h, logger), nil
 }

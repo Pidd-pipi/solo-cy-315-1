@@ -27,6 +27,8 @@ type GenerateScheduleResponse struct {
 	Conflicts []ConflictResponse `json:"conflicts"`
 	Generated int                `json:"generated"`
 	Required  int                `json:"required"`
+	VersionID uint               `json:"version_id"`
+	VersionNo uint               `json:"version_no"`
 }
 
 // ScheduleResponse is a timetable entry enriched with related names.

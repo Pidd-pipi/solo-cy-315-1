@@ -12,3 +12,12 @@ const (
 	ActionSwap = "swap"
 	ActionMove = "move"
 )
+
+// Schedule version lifecycle statuses. A version starts as draft, becomes
+// published exactly once at a time, and turns archived when a newer version
+// is published.
+const (
+	VersionStatusDraft     = "draft"
+	VersionStatusPublished = "published"
+	VersionStatusArchived  = "archived"
+)

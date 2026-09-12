@@ -36,6 +36,7 @@ type scheduleService struct {
 	courses     repository.CourseRepository
 	timeSlots   repository.TimeSlotRepository
 	adjustments repository.AdjustmentLogRepository
+	versions    ScheduleVersionService
 	logger      *slog.Logger
 }
 
@@ -48,6 +49,7 @@ func NewScheduleService(
 	courses repository.CourseRepository,
 	timeSlots repository.TimeSlotRepository,
 	adjustments repository.AdjustmentLogRepository,
+	versions ScheduleVersionService,
 	logger *slog.Logger,
 ) ScheduleService {
 	return &scheduleService{
@@ -58,6 +60,7 @@ func NewScheduleService(
 		courses:     courses,
 		timeSlots:   timeSlots,
 		adjustments: adjustments,
+		versions:    versions,
 		logger:      logger,
 	}
 }
@@ -166,11 +169,21 @@ func (s *scheduleService) Generate(ctx context.Context, req *dto.GenerateSchedul
 	if err != nil {
 		return nil, fmt.Errorf("enrich schedules: %w", err)
 	}
+
+	// Every generation run captures an immutable snapshot of the resulting
+	// timetable so versions can be listed, inspected, diffed and published.
+	snapshot, err := s.versions.Snapshot(ctx, req, allSchedules)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot schedule version: %w", err)
+	}
+
 	resp := &dto.GenerateScheduleResponse{
 		Schedules: responses,
 		Conflicts: append(conflicts, generatedConflicts...),
 		Generated: len(allSchedules),
 		Required:  required,
+		VersionID: snapshot.ID,
+		VersionNo: snapshot.VersionNo,
 	}
 	return resp, nil
 }

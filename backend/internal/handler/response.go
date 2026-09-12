@@ -29,6 +29,10 @@ func Error(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, dto.Response{Code: constants.CodeNotFound, Message: constants.MsgNotFound, Data: nil})
 	case errors.Is(err, service.ErrInvalid):
 		c.JSON(http.StatusBadRequest, dto.Response{Code: constants.CodeBadRequest, Message: constants.MsgBadRequest, Data: nil})
+	case errors.Is(err, service.ErrVersionAlreadyPublished):
+		c.JSON(http.StatusConflict, dto.Response{Code: constants.CodeConflict, Message: "schedule version already published", Data: nil})
+	case errors.Is(err, service.ErrVersionNotLatest):
+		c.JSON(http.StatusConflict, dto.Response{Code: constants.CodeConflict, Message: "only the latest schedule version can be published", Data: nil})
 	case errors.Is(err, service.ErrConflict):
 		c.JSON(http.StatusConflict, dto.Response{Code: constants.CodeConflict, Message: constants.MsgConflict, Data: nil})
 	default:

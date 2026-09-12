@@ -14,13 +14,14 @@ import (
 
 // Handlers aggregates all HTTP handlers for dependency injection.
 type Handlers struct {
-	Classroom  *handler.ClassroomHandler
-	Teacher    *handler.TeacherHandler
-	Class      *handler.ClassHandler
-	Course     *handler.CourseHandler
-	TimeSlot   *handler.TimeSlotHandler
-	Schedule   *handler.ScheduleHandler
-	Statistics *handler.StatisticsHandler
+	Classroom       *handler.ClassroomHandler
+	Teacher         *handler.TeacherHandler
+	Class           *handler.ClassHandler
+	Course          *handler.CourseHandler
+	TimeSlot        *handler.TimeSlotHandler
+	Schedule        *handler.ScheduleHandler
+	ScheduleVersion *handler.ScheduleVersionHandler
+	Statistics      *handler.StatisticsHandler
 }
 
 // New constructs the Gin engine with all routes and middleware.
@@ -88,6 +89,13 @@ func New(h Handlers, logger *slog.Logger) *gin.Engine {
 			schedules.POST("/swap", h.Schedule.Swap)
 			schedules.POST("/move", h.Schedule.Move)
 			schedules.GET("/:id", h.Schedule.Get)
+		}
+		versions := api.Group("/schedule-versions")
+		{
+			versions.GET("", h.ScheduleVersion.List)
+			versions.GET("/compare", h.ScheduleVersion.Compare)
+			versions.GET("/:id", h.ScheduleVersion.Get)
+			versions.POST("/:id/publish", h.ScheduleVersion.Publish)
 		}
 		statistics := api.Group("/statistics")
 		{
