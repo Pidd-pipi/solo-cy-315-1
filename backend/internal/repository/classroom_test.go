@@ -20,12 +20,16 @@ func newTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	// Single connection serializes access, mirroring production SQLite setup.
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
 	// Closing the pool destroys the shared in-memory database, keeping
 	// repeated runs (-count>1) independent.
 	t.Cleanup(func() {
-		if sqlDB, err := db.DB(); err == nil {
-			_ = sqlDB.Close()
-		}
+		_ = sqlDB.Close()
 	})
 	if err := db.AutoMigrate(&model.Classroom{}, &model.Teacher{}, &model.Class{}, &model.Course{}, &model.TimeSlot{}, &model.Schedule{}, &model.AdjustmentLog{}, &model.ScheduleVersion{}, &model.ScheduleVersionEntry{}); err != nil {
 		t.Fatalf("migrate db: %v", err)

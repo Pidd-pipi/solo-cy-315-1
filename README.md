@@ -68,6 +68,7 @@ go run ./cmd/server
 | GET | `/api/v1/schedule-versions/:id` | 版本详情（含快照条目与生成参数） |
 | GET | `/api/v1/schedule-versions/compare?from=&to=` | 比较两个版本（课程增删与时段变化） |
 | POST | `/api/v1/schedule-versions/:id/publish` | 发布版本（仅最新版可发布，全局唯一已发布） |
+| POST | `/api/v1/schedule-versions/:id/rollback` | 回滚到历史版本（生成内容相同的新草稿并记录来源） |
 | GET | `/api/v1/statistics/classrooms` | 教室利用率 |
 | GET | `/api/v1/statistics/teachers` | 教师工作量 |
 | GET | `/api/v1/statistics/density` | 课程分布热力图 |

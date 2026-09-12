@@ -104,3 +104,23 @@ func (h *ScheduleVersionHandler) Publish(c *gin.Context) {
 	}
 	OK(c, item)
 }
+
+// Rollback godoc
+// @Summary Roll back to a schedule version, creating a new draft copy
+// @Tags schedule-versions
+// @Produce json
+// @Param id path int true "source version id"
+// @Success 201 {object} dto.Response
+// @Router /api/v1/schedule-versions/{id}/rollback [post]
+func (h *ScheduleVersionHandler) Rollback(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.Rollback(c.Request.Context(), id)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	Created(c, item)
+}

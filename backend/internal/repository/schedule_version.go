@@ -21,6 +21,7 @@ type ScheduleVersionRepository interface {
 	Create(ctx context.Context, version *model.ScheduleVersion, entries []model.ScheduleVersionEntry) error
 	List(ctx context.Context, page, pageSize int) ([]model.ScheduleVersion, int64, error)
 	GetByID(ctx context.Context, id uint) (*model.ScheduleVersion, error)
+	GetByIDs(ctx context.Context, ids []uint) ([]model.ScheduleVersion, error)
 	GetEntries(ctx context.Context, versionID uint) ([]model.ScheduleVersionEntry, error)
 	Latest(ctx context.Context) (*model.ScheduleVersion, error)
 	Publish(ctx context.Context, id uint, publishedAt time.Time) error
@@ -105,6 +106,17 @@ func (r *scheduleVersionRepository) GetByID(ctx context.Context, id uint) (*mode
 		return nil, normalizeError(err)
 	}
 	return &item, nil
+}
+
+func (r *scheduleVersionRepository) GetByIDs(ctx context.Context, ids []uint) ([]model.ScheduleVersion, error) {
+	items := []model.ScheduleVersion{}
+	if len(ids) == 0 {
+		return items, nil
+	}
+	if err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("get schedule versions by ids: %w", err)
+	}
+	return items, nil
 }
 
 func (r *scheduleVersionRepository) GetEntries(ctx context.Context, versionID uint) ([]model.ScheduleVersionEntry, error) {

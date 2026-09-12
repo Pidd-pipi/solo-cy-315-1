@@ -16,14 +16,15 @@ import (
 )
 
 // ScheduleVersionService exposes immutable timetable snapshot operations:
-// capture on generation, paginated listing, detail view, version diff and
-// publish lifecycle.
+// capture on generation, paginated listing, detail view, version diff,
+// rollback and publish lifecycle.
 type ScheduleVersionService interface {
 	Snapshot(ctx context.Context, req *dto.GenerateScheduleRequest, schedules []model.Schedule) (*model.ScheduleVersion, error)
 	List(ctx context.Context, page, pageSize int) ([]dto.ScheduleVersionResponse, int64, error)
 	Get(ctx context.Context, id uint) (*dto.ScheduleVersionDetailResponse, error)
 	Compare(ctx context.Context, fromID, toID uint) (*dto.CompareScheduleVersionsResponse, error)
 	Publish(ctx context.Context, id uint) (*dto.ScheduleVersionResponse, error)
+	Rollback(ctx context.Context, id uint) (*dto.ScheduleVersionResponse, error)
 }
 
 type scheduleVersionService struct {
@@ -93,9 +94,13 @@ func (s *scheduleVersionService) List(ctx context.Context, page, pageSize int) (
 	if err != nil {
 		return nil, 0, fmt.Errorf("list schedule versions: %w", err)
 	}
+	sourceNos, err := s.sourceVersionNos(ctx, items)
+	if err != nil {
+		return nil, 0, err
+	}
 	out := make([]dto.ScheduleVersionResponse, 0, len(items))
 	for i := range items {
-		out = append(out, versionResponse(&items[i]))
+		out = append(out, versionResponse(&items[i], sourceNos))
 	}
 	return out, total, nil
 }
@@ -116,8 +121,12 @@ func (s *scheduleVersionService) Get(ctx context.Context, id uint) (*dto.Schedul
 	if err != nil {
 		return nil, err
 	}
+	sourceNos, err := s.sourceVersionNos(ctx, []model.ScheduleVersion{*version})
+	if err != nil {
+		return nil, err
+	}
 	return &dto.ScheduleVersionDetailResponse{
-		ScheduleVersionResponse: versionResponse(version),
+		ScheduleVersionResponse: versionResponse(version, sourceNos),
 		Entries:                 enriched,
 	}, nil
 }
@@ -218,7 +227,54 @@ func (s *scheduleVersionService) Publish(ctx context.Context, id uint) (*dto.Sch
 	if err != nil {
 		return nil, fmt.Errorf("get published schedule version: %w", err)
 	}
-	resp := versionResponse(version)
+	sourceNos, err := s.sourceVersionNos(ctx, []model.ScheduleVersion{*version})
+	if err != nil {
+		return nil, err
+	}
+	resp := versionResponse(version, sourceNos)
+	return &resp, nil
+}
+
+// Rollback creates a new draft version whose content is copied from the
+// chosen historical version. Rollback only appends: the source version and
+// all other versions stay untouched. The new draft receives the next unique
+// version number and follows the normal publish rules.
+func (s *scheduleVersionService) Rollback(ctx context.Context, id uint) (*dto.ScheduleVersionResponse, error) {
+	source, err := s.versions.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get source schedule version: %w", err)
+	}
+	entries, err := s.versions.GetEntries(ctx, source.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list source version entries: %w", err)
+	}
+	version := &model.ScheduleVersion{
+		Semester:        source.Semester,
+		Params:          source.Params,
+		EntryCount:      len(entries),
+		Status:          constants.VersionStatusDraft,
+		SourceVersionID: &source.ID,
+	}
+	copied := make([]model.ScheduleVersionEntry, 0, len(entries))
+	for _, e := range entries {
+		copied = append(copied, model.ScheduleVersionEntry{
+			Week:        e.Week,
+			DayOfWeek:   e.DayOfWeek,
+			TimeSlotID:  e.TimeSlotID,
+			ClassroomID: e.ClassroomID,
+			TeacherID:   e.TeacherID,
+			ClassID:     e.ClassID,
+			CourseID:    e.CourseID,
+		})
+	}
+	if err := s.versions.Create(ctx, version, copied); err != nil {
+		return nil, fmt.Errorf("create rollback version: %w", err)
+	}
+	sourceNos := map[uint]uint{source.ID: source.VersionNo}
+	resp := versionResponse(version, sourceNos)
 	return &resp, nil
 }
 
@@ -409,18 +465,44 @@ func diffVersionEntries(from, to []model.ScheduleVersionEntry) (added, removed [
 	return added, removed, changed
 }
 
-func versionResponse(v *model.ScheduleVersion) dto.ScheduleVersionResponse {
+// sourceVersionNos resolves the source version ids referenced by the given
+// versions to their version numbers in one batch lookup.
+func (s *scheduleVersionService) sourceVersionNos(ctx context.Context, versions []model.ScheduleVersion) (map[uint]uint, error) {
+	ids := make([]uint, 0, len(versions))
+	for i := range versions {
+		if versions[i].SourceVersionID != nil {
+			ids = append(ids, *versions[i].SourceVersionID)
+		}
+	}
+	sources, err := s.versions.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load source versions: %w", err)
+	}
+	out := make(map[uint]uint, len(sources))
+	for i := range sources {
+		out[sources[i].ID] = sources[i].VersionNo
+	}
+	return out, nil
+}
+
+func versionResponse(v *model.ScheduleVersion, sourceNos map[uint]uint) dto.ScheduleVersionResponse {
 	resp := dto.ScheduleVersionResponse{
-		ID:         v.ID,
-		VersionNo:  v.VersionNo,
-		Semester:   v.Semester,
-		Status:     v.Status,
-		EntryCount: v.EntryCount,
-		Params:     v.Params,
-		CreatedAt:  v.CreatedAt.Format(time.RFC3339),
+		ID:              v.ID,
+		VersionNo:       v.VersionNo,
+		Semester:        v.Semester,
+		Status:          v.Status,
+		EntryCount:      v.EntryCount,
+		Params:          v.Params,
+		CreatedAt:       v.CreatedAt.Format(time.RFC3339),
+		SourceVersionID: v.SourceVersionID,
 	}
 	if v.PublishedAt != nil {
 		resp.PublishedAt = v.PublishedAt.Format(time.RFC3339)
+	}
+	if v.SourceVersionID != nil {
+		if no, ok := sourceNos[*v.SourceVersionID]; ok {
+			resp.SourceVersionNo = &no
+		}
 	}
 	return resp
 }

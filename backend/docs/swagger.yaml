@@ -639,6 +639,24 @@ paths:
       summary: Publish a schedule version
       tags:
       - schedule-versions
+  /api/v1/schedule-versions/{id}/rollback:
+    post:
+      parameters:
+      - description: source version id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.Response'
+      summary: Roll back to a schedule version, creating a new draft copy
+      tags:
+      - schedule-versions
   /api/v1/schedule-versions/compare:
     get:
       parameters:

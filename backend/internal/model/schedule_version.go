@@ -8,15 +8,17 @@ import (
 
 // ScheduleVersion is an immutable snapshot of the full timetable captured at
 // generation time. Snapshots are never updated or deleted; publishing only
-// flips the status field.
+// flips the status field. A version created by a rollback records the source
+// version it was copied from.
 type ScheduleVersion struct {
 	gorm.Model
-	VersionNo   uint       `gorm:"uniqueIndex;not null" json:"version_no"`
-	Semester    string     `gorm:"size:128" json:"semester"`
-	Params      string     `gorm:"type:text" json:"params"`
-	EntryCount  int        `gorm:"not null" json:"entry_count"`
-	Status      string     `gorm:"size:16;not null;index" json:"status"`
-	PublishedAt *time.Time `json:"published_at,omitempty"`
+	VersionNo       uint       `gorm:"uniqueIndex;not null" json:"version_no"`
+	Semester        string     `gorm:"size:128" json:"semester"`
+	Params          string     `gorm:"type:text" json:"params"`
+	EntryCount      int        `gorm:"not null" json:"entry_count"`
+	Status          string     `gorm:"size:16;not null;index" json:"status"`
+	PublishedAt     *time.Time `json:"published_at,omitempty"`
+	SourceVersionID *uint      `gorm:"index" json:"source_version_id,omitempty"`
 }
 
 // TableName explicitly names the table.

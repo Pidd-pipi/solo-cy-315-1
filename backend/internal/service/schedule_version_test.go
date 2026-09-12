@@ -3,7 +3,9 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -349,5 +351,239 @@ func TestScheduleVersionPublishLifecycle(t *testing.T) {
 	}
 	if publishedCount != 1 {
 		t.Fatalf("expected exactly one published version, got %d", publishedCount)
+	}
+}
+
+// entryKeySet flattens enriched entries into comparable lesson placement keys.
+func entryKeySet(entries []dto.ScheduleVersionEntryResponse) map[string]int {
+	out := map[string]int{}
+	for _, e := range entries {
+		key := fmt.Sprintf("%d-%d-%d-%d-%d-%d-%d", e.Week, e.DayOfWeek, e.TimeSlotID, e.ClassroomID, e.TeacherID, e.ClassID, e.CourseID)
+		out[key]++
+	}
+	return out
+}
+
+func TestScheduleVersionRollback(t *testing.T) {
+	ctx := context.Background()
+	db := newScheduleTestDB(t)
+	f := seedVersionFixture(t, db)
+	versions := newVersionService(db, slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+
+	v1, err := versions.Snapshot(ctx, generateRequest(1, f), []model.Schedule{
+		{Week: 1, DayOfWeek: 1, TimeSlotID: f.slot1.ID, ClassroomID: f.room.ID, TeacherID: f.teacher.ID, ClassID: f.class.ID, CourseID: f.course1.ID},
+		{Week: 1, DayOfWeek: 2, TimeSlotID: f.slot2.ID, ClassroomID: f.room.ID, TeacherID: f.teacher.ID, ClassID: f.class.ID, CourseID: f.course2.ID},
+	})
+	if err != nil {
+		t.Fatalf("snapshot v1: %v", err)
+	}
+	v2, err := versions.Snapshot(ctx, generateRequest(1, f), []model.Schedule{
+		{Week: 1, DayOfWeek: 1, TimeSlotID: f.slot1.ID, ClassroomID: f.room.ID, TeacherID: f.teacher.ID, ClassID: f.class.ID, CourseID: f.course3.ID},
+	})
+	if err != nil {
+		t.Fatalf("snapshot v2: %v", err)
+	}
+
+	// Roll back to v1: a new draft with identical content appears.
+	rb, err := versions.Rollback(ctx, v1.ID)
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if rb.VersionNo != 3 || rb.Status != constants.VersionStatusDraft || rb.EntryCount != 2 {
+		t.Fatalf("unexpected rollback version: %+v", rb)
+	}
+	if rb.SourceVersionID == nil || *rb.SourceVersionID != v1.ID {
+		t.Fatalf("expected source version id %d, got %+v", v1.ID, rb.SourceVersionID)
+	}
+	if rb.SourceVersionNo == nil || *rb.SourceVersionNo != v1.VersionNo {
+		t.Fatalf("expected source version no %d, got %+v", v1.VersionNo, rb.SourceVersionNo)
+	}
+
+	// The draft's entries and params are identical to the source version.
+	detail, err := versions.Get(ctx, rb.ID)
+	if err != nil {
+		t.Fatalf("get rollback version: %v", err)
+	}
+	source, err := versions.Get(ctx, v1.ID)
+	if err != nil {
+		t.Fatalf("get source version: %v", err)
+	}
+	if !reflect.DeepEqual(entryKeySet(source.Entries), entryKeySet(detail.Entries)) {
+		t.Fatalf("rollback content mismatch: source %+v vs rollback %+v", entryKeySet(source.Entries), entryKeySet(detail.Entries))
+	}
+	if detail.Params != source.Params {
+		t.Fatalf("rollback params mismatch: %s vs %s", source.Params, detail.Params)
+	}
+
+	// Rollback only appends: the source and other versions stay untouched.
+	if source.Status != constants.VersionStatusDraft || len(source.Entries) != 2 {
+		t.Fatalf("source version must stay untouched, got status=%s entries=%d", source.Status, len(source.Entries))
+	}
+	other, err := versions.Get(ctx, v2.ID)
+	if err != nil {
+		t.Fatalf("get v2: %v", err)
+	}
+	if other.Status != constants.VersionStatusDraft || len(other.Entries) != 1 {
+		t.Fatalf("other version must stay untouched, got status=%s entries=%d", other.Status, len(other.Entries))
+	}
+
+	// Repeated rollback creates another distinct draft with a unique number.
+	rb2, err := versions.Rollback(ctx, v1.ID)
+	if err != nil {
+		t.Fatalf("repeated rollback: %v", err)
+	}
+	if rb2.ID == rb.ID || rb2.VersionNo != 4 {
+		t.Fatalf("repeated rollback must yield a new version, got id=%d no=%d", rb2.ID, rb2.VersionNo)
+	}
+
+	_, total, err := versions.List(ctx, 1, 20)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("expected 4 versions after two rollbacks, got %d", total)
+	}
+}
+
+func TestScheduleVersionRollbackNotFound(t *testing.T) {
+	ctx := context.Background()
+	db := newScheduleTestDB(t)
+	versions := newVersionService(db, slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+
+	if _, err := versions.Rollback(ctx, 9999); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound rolling back a missing version, got %v", err)
+	}
+}
+
+func TestScheduleVersionConcurrentRollback(t *testing.T) {
+	ctx := context.Background()
+	db := newScheduleTestDB(t)
+	f := seedVersionFixture(t, db)
+	versions := newVersionService(db, slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+
+	v1, err := versions.Snapshot(ctx, generateRequest(1, f), []model.Schedule{
+		{Week: 1, DayOfWeek: 1, TimeSlotID: f.slot1.ID, ClassroomID: f.room.ID, TeacherID: f.teacher.ID, ClassID: f.class.ID, CourseID: f.course1.ID},
+		{Week: 1, DayOfWeek: 2, TimeSlotID: f.slot2.ID, ClassroomID: f.room.ID, TeacherID: f.teacher.ID, ClassID: f.class.ID, CourseID: f.course2.ID},
+	})
+	if err != nil {
+		t.Fatalf("snapshot v1: %v", err)
+	}
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	versionNos := make([]uint, workers)
+	versionIDs := make([]uint, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rb, err := versions.Rollback(ctx, v1.ID)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			versionNos[i] = rb.VersionNo
+			versionIDs[i] = rb.ID
+		}(i)
+	}
+	wg.Wait()
+
+	// Every request gets a definite result; version numbers stay unique.
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("rollback %d failed: %v", i, err)
+		}
+	}
+	seen := map[uint]bool{}
+	for _, no := range versionNos {
+		if no < 2 || no > workers+1 || seen[no] {
+			t.Fatalf("duplicate or out-of-range version numbers: %v", versionNos)
+		}
+		seen[no] = true
+	}
+
+	// Each rollback produced a complete draft copy of the source.
+	for _, id := range versionIDs {
+		detail, err := versions.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get rollback version %d: %v", id, err)
+		}
+		if detail.Status != constants.VersionStatusDraft || len(detail.Entries) != 2 {
+			t.Fatalf("incomplete rollback version %d: status=%s entries=%d", id, detail.Status, len(detail.Entries))
+		}
+		if detail.SourceVersionID == nil || *detail.SourceVersionID != v1.ID {
+			t.Fatalf("rollback version %d lost its source reference", id)
+		}
+	}
+
+	_, total, err := versions.List(ctx, 1, 50)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if total != workers+1 {
+		t.Fatalf("expected %d versions, got %d", workers+1, total)
+	}
+}
+
+func TestScheduleVersionRollbackPublishFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newScheduleTestDB(t)
+	f := seedVersionFixture(t, db)
+	versions := newVersionService(db, slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+
+	v1, err := versions.Snapshot(ctx, generateRequest(1, f), nil)
+	if err != nil {
+		t.Fatalf("snapshot v1: %v", err)
+	}
+	v2, err := versions.Snapshot(ctx, generateRequest(1, f), nil)
+	if err != nil {
+		t.Fatalf("snapshot v2: %v", err)
+	}
+	if _, err := versions.Publish(ctx, v2.ID); err != nil {
+		t.Fatalf("publish v2: %v", err)
+	}
+
+	// The rollback draft is the newest version, so it may be published.
+	rb, err := versions.Rollback(ctx, v1.ID)
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	published, err := versions.Publish(ctx, rb.ID)
+	if err != nil {
+		t.Fatalf("publish rollback draft: %v", err)
+	}
+	if published.Status != constants.VersionStatusPublished {
+		t.Fatalf("expected published rollback draft, got %s", published.Status)
+	}
+
+	// The previously published version was archived; exactly one remains.
+	superseded, err := versions.Get(ctx, v2.ID)
+	if err != nil {
+		t.Fatalf("get v2: %v", err)
+	}
+	if superseded.Status != constants.VersionStatusArchived {
+		t.Fatalf("expected v2 archived, got %s", superseded.Status)
+	}
+	items, _, err := versions.List(ctx, 1, 20)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	publishedCount := 0
+	for _, item := range items {
+		if item.Status == constants.VersionStatusPublished {
+			publishedCount++
+			if item.ID != rb.ID {
+				t.Fatalf("only the rollback draft may stay published, got id=%d", item.ID)
+			}
+		}
+	}
+	if publishedCount != 1 {
+		t.Fatalf("expected exactly one published version, got %d", publishedCount)
+	}
+
+	// Older versions still cannot be published.
+	if _, err := versions.Publish(ctx, v1.ID); !errors.Is(err, service.ErrVersionNotLatest) {
+		t.Fatalf("expected ErrVersionNotLatest publishing old version, got %v", err)
 	}
 }

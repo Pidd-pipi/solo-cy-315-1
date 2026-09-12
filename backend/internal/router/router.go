@@ -96,6 +96,7 @@ func New(h Handlers, logger *slog.Logger) *gin.Engine {
 			versions.GET("/compare", h.ScheduleVersion.Compare)
 			versions.GET("/:id", h.ScheduleVersion.Get)
 			versions.POST("/:id/publish", h.ScheduleVersion.Publish)
+			versions.POST("/:id/rollback", h.ScheduleVersion.Rollback)
 		}
 		statistics := api.Group("/statistics")
 		{

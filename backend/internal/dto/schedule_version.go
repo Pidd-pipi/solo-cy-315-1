@@ -2,14 +2,16 @@ package dto
 
 // ScheduleVersionResponse is the summary of one timetable snapshot.
 type ScheduleVersionResponse struct {
-	ID          uint   `json:"id"`
-	VersionNo   uint   `json:"version_no"`
-	Semester    string `json:"semester"`
-	Status      string `json:"status"`
-	EntryCount  int    `json:"entry_count"`
-	Params      string `json:"params"`
-	PublishedAt string `json:"published_at,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID              uint   `json:"id"`
+	VersionNo       uint   `json:"version_no"`
+	Semester        string `json:"semester"`
+	Status          string `json:"status"`
+	EntryCount      int    `json:"entry_count"`
+	Params          string `json:"params"`
+	PublishedAt     string `json:"published_at,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	SourceVersionID *uint  `json:"source_version_id,omitempty"`
+	SourceVersionNo *uint  `json:"source_version_no,omitempty"`
 }
 
 // ScheduleVersionEntryResponse is one lesson inside a snapshot, enriched with

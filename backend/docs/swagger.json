@@ -600,6 +600,34 @@
                 }
             }
         },
+        "/api/v1/schedule-versions/{id}/rollback": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedule-versions"
+                ],
+                "summary": "Roll back to a schedule version, creating a new draft copy",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "source version id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/dto.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/schedules": {
             "get": {
                 "produces": [

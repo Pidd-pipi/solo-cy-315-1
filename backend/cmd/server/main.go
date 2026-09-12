@@ -95,6 +95,14 @@ func openDatabase(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// SQLite allows only one writer at a time. A single connection serializes
+	// all database access in-process, so concurrent requests never hit
+	// shared-cache lock conflicts; transactions still provide atomicity.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get sql db: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
 	return db, nil
 }
 
